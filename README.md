@@ -31,11 +31,20 @@ handy for looping a clip to match a song length (e.g. exactly 4m07s).
 
 ## Running
 
+### Portable Standalone Version (No Python or FFmpeg install required)
+- Download `BoomerangLooper_Portable.zip` or `BoomerangLooper.exe` from `dist/`.
+- Double-click **`BoomerangLooper.exe`** to launch immediately on any Windows PC.
+
+### Standard Python Version
 Double-click **`Run Boomerang Looper.bat`**, or from a terminal:
 
 ```
 python Boomerang_Looper.py
 ```
+
+### Building Portable Releases
+To compile a fresh single-file portable executable with embedded FFmpeg binaries:
+Double-click **`Build Portable Release.bat`** or run `python build_portable.py`. Outputs are saved to `dist/`.
 
 ## Usage
 

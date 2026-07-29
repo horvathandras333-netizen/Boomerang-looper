@@ -9,6 +9,7 @@ Boomerang Looper
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import sys
 import subprocess
 import threading
 import os
@@ -30,7 +31,19 @@ def _subprocess_flags() -> dict[str, Any]:
     return {}
 
 
-def find_ffmpeg():
+def find_ffmpeg() -> str | None:
+    dirs_to_check = []
+    if hasattr(sys, "_MEIPASS"):
+        dirs_to_check.append(getattr(sys, "_MEIPASS"))
+    if getattr(sys, "frozen", False):
+        dirs_to_check.append(os.path.dirname(sys.executable))
+    dirs_to_check.append(os.path.dirname(os.path.abspath(__file__)))
+
+    for d in dirs_to_check:
+        p = os.path.join(d, "ffmpeg.exe") if os.name == "nt" else os.path.join(d, "ffmpeg")
+        if os.path.isfile(p):
+            return p
+
     for name in ("ffmpeg", "ffmpeg.exe"):
         p = shutil.which(name)
         if p:
@@ -38,7 +51,19 @@ def find_ffmpeg():
     return None
 
 
-def find_ffprobe():
+def find_ffprobe() -> str | None:
+    dirs_to_check = []
+    if hasattr(sys, "_MEIPASS"):
+        dirs_to_check.append(getattr(sys, "_MEIPASS"))
+    if getattr(sys, "frozen", False):
+        dirs_to_check.append(os.path.dirname(sys.executable))
+    dirs_to_check.append(os.path.dirname(os.path.abspath(__file__)))
+
+    for d in dirs_to_check:
+        p = os.path.join(d, "ffprobe.exe") if os.name == "nt" else os.path.join(d, "ffprobe")
+        if os.path.isfile(p):
+            return p
+
     for name in ("ffprobe", "ffprobe.exe"):
         p = shutil.which(name)
         if p:
