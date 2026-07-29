@@ -73,3 +73,8 @@ or double-click `Run Boomerang Looper.bat`.
   (prefers `pythonw` to avoid a console flash, falls back to `python`).
   Verified it launches the app correctly via ShellExecute (the way
   double-click actually invokes it).
+- 2026-07-29 — Implemented 3 major new features in `Boomerang_Looper.py`:
+  - **Audio track replacement & mixing**: Added file picker for audio/music tracks (`.mp3`, `.wav`, etc.) with 3 modes (`Keep original`, `Replace audio`, `Mix with original`) and an optional 2s end-of-track fade-out.
+  - **Playback speed controls**: Added speed dropdown (`0.5x`, `0.75x`, `1.0x`, `1.25x`, `1.5x`, `2.0x`) applying `setpts` and `atempo` filters.
+  - **Advanced transition styles**: Added transition effect dropdown supporting 10 FFmpeg `xfade` styles (`fade`, `wipeleft`, `wiperight`, `slideup`, `slidedown`, `circlecrop`, `radial`, `zoomIn`, `pixelize`, `dissolve`).
+

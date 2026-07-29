@@ -10,6 +10,9 @@ handy for looping a clip to match a song length (e.g. exactly 4m07s).
 
 - Loops a video **forward → reverse → forward → …** until it reaches an
   exact target duration, then hard-cuts it.
+- **Custom audio / music track replacement & mixing** with optional end-of-track fade-out.
+- **Playback speed controls** (0.5x slow-mo up to 2.0x fast-forward).
+- **Multiple transition effects** (`fade`, `wipeleft`, `wiperight`, `slideup`, `slidedown`, `circlecrop`, `radial`, `zoomIn`, `pixelize`, `dissolve`).
 - Optional **crossfade** between segments for a smoother join.
 - **Real-time progress bar** driven by FFmpeg's own progress output.
 - **Cancel** button — stops the running FFmpeg job cleanly at any time.
@@ -38,10 +41,10 @@ python Boomerang_Looper.py
 
 1. Click the file picker and choose a video.
 2. Set the **target duration** (seconds) — use a preset or type your own.
-3. Set the **crossfade overlap** (seconds), or `0` for a hard cut with no
-   blending between segments.
-4. Click **Create Boomerang**, choose where to save, and watch the
-   progress bar. You can cancel at any point.
+3. Set the **crossfade overlap** (seconds) and choose a **transition effect** or set overlap to `0` for a hard cut.
+4. Select **playback speed** (0.5x, 1.0x, 2.0x, etc.).
+5. (Optional) Browse for a custom **audio / music track** and select **Replace audio**, **Mix with original**, or **Keep original**, with optional 2s fade out.
+6. Click **Create Boomerang**, choose where to save, and watch the progress bar. You can cancel at any point.
 
 ## How it works
 
