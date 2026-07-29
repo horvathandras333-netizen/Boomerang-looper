@@ -92,9 +92,20 @@ def has_nvenc() -> bool:
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         return False
-    result = subprocess.run([ffmpeg, "-hide_banner", "-encoders"], capture_output=True, text=True,
-                             **_subprocess_flags())
-    return "h264_nvenc" in result.stdout
+    # Seeing h264_nvenc in `-encoders` only means FFmpeg was compiled with
+    # NVENC support.  It does not verify that the installed NVIDIA driver can
+    # actually load the API required by this FFmpeg build.
+    result = subprocess.run(
+        [
+            ffmpeg, "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "color=size=16x16:rate=1",
+            "-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-",
+        ],
+        capture_output=True,
+        text=True,
+        **_subprocess_flags(),
+    )
+    return result.returncode == 0
 
 
 class BoomerangApp(tk.Tk):
