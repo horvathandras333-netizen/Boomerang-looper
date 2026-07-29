@@ -1,7 +1,7 @@
 """
 Build Portable Release for Boomerang Looper
-Creates a clean, instant-launch portable folder distribution containing
-BoomerangLooper.exe + FFmpeg binaries, packaged into BoomerangLooper_Portable.zip.
+Creates a 1-file standalone executable (BoomerangLooper.exe) containing
+Python runtime, Tkinter GUI, and embedded FFmpeg binaries into 1 single file.
 """
 
 import os
@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 def build_portable():
-    print("=== Building Boomerang Looper Portable Release ===")
+    print("=== Building Boomerang Looper 1-File Portable Executable ===")
     
     # 1. Locate FFmpeg & FFprobe
     ffmpeg = shutil.which("ffmpeg.exe") or shutil.which("ffmpeg")
@@ -27,62 +27,46 @@ def build_portable():
     
     project_dir = Path(__file__).parent.resolve()
     dist_dir = project_dir / "dist"
-    portable_dir = dist_dir / "BoomerangLooper"
     
-    # Clean previous build artifacts
-    if dist_dir.exists():
-        try:
-            shutil.rmtree(dist_dir, ignore_errors=True)
-        except Exception:
-            pass
-            
-    # 2. Run PyInstaller in --onedir mode (prevents temp archive decompression locks)
+    # 2. PyInstaller 1-file standalone build using --add-data (avoids zlib decompression lock)
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconsole",
-        "--onedir",
+        "--onefile",
         "--name", "BoomerangLooper",
         "--clean",
+        "--add-data", f"{ffmpeg}{os.pathsep}.",
+        "--add-data", f"{ffprobe}{os.pathsep}.",
         str(project_dir / "Boomerang_Looper.py")
     ]
     
-    print("\nRunning PyInstaller (--onedir mode for instant startup)...")
+    print("\nRunning PyInstaller (Building 1-file executable)...")
     print(" ".join(cmd))
     res = subprocess.run(cmd, cwd=str(project_dir))
     if res.returncode != 0:
         print("PyInstaller build failed!")
         sys.exit(res.returncode)
         
-    exe_path = portable_dir / ("BoomerangLooper.exe" if os.name == "nt" else "BoomerangLooper")
+    exe_path = dist_dir / ("BoomerangLooper.exe" if os.name == "nt" else "BoomerangLooper")
     if not exe_path.exists():
         print(f"Error: Executable not found at {exe_path}")
         sys.exit(1)
         
-    # 3. Copy FFmpeg & FFprobe directly into the portable directory
-    print("\nBundling FFmpeg & FFprobe into portable folder...")
-    shutil.copy2(ffmpeg, portable_dir / "ffmpeg.exe")
-    shutil.copy2(ffprobe, portable_dir / "ffprobe.exe")
+    print(f"\n[OK] Single 1-file standalone executable built at: {exe_path}")
     
-    readme = project_dir / "README.md"
-    if readme.exists():
-        shutil.copy2(readme, portable_dir / "README.md")
-        
-    print(f"[OK] Portable directory assembled at: {portable_dir}")
-    
-    # 4. Create portable .zip package containing the BoomerangLooper folder
+    # 3. Create portable .zip package containing the single executable and README
     zip_path = dist_dir / "BoomerangLooper_Portable.zip"
     print(f"Creating portable zip archive: {zip_path}")
     
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-        for root, _, files in os.walk(portable_dir):
-            for file in files:
-                full_p = Path(root) / file
-                rel_p = Path("BoomerangLooper") / full_p.relative_to(portable_dir)
-                z.write(full_p, arcname=rel_p)
+        z.write(exe_path, arcname=exe_path.name)
+        readme = project_dir / "README.md"
+        if readme.exists():
+            z.write(readme, arcname="README.md")
                 
     print(f"\n[OK] Portable release build complete!")
-    print(f"Portable Folder: {portable_dir}")
-    print(f"Portable Zip:    {zip_path}")
+    print(f"Single Executable: {exe_path}")
+    print(f"Portable Zip:       {zip_path}")
 
 if __name__ == "__main__":
     build_portable()
