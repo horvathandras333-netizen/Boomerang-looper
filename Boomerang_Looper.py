@@ -16,6 +16,7 @@ import os
 import json
 import tempfile
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -143,12 +144,33 @@ class BoomerangApp(tk.Tk):
     MUTED   = "#7070A0"
     ERROR   = "#EF4444"
 
+    CONFIG_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "BoomerangLooper"
+    CONFIG_FILE = CONFIG_DIR / "settings.json"
+    LOG_FILE = CONFIG_DIR / "jobs.jsonl"
+    THEMES = {
+        "dark": {
+            "ACCENT": "#7C3AED", "ACCENT2": "#A78BFA", "BG": "#0F0F13",
+            "PANEL": "#1A1A24", "BORDER": "#2E2E42", "TEXT": "#E8E8F0",
+            "MUTED": "#8B8BA7", "ERROR": "#EF4444", "ENTRY": "#12121A",
+        },
+        "light": {
+            "ACCENT": "#6D28D9", "ACCENT2": "#8B5CF6", "BG": "#F4F4F8",
+            "PANEL": "#FFFFFF", "BORDER": "#D9D9E5", "TEXT": "#20202A",
+            "MUTED": "#6B6B7A", "ERROR": "#C62828", "ENTRY": "#FAFAFC",
+        },
+    }
+
     def __init__(self):
         super().__init__()
         self.title("Boomerang Looper")
+        self.theme_name = "dark"
+        self._apply_theme_palette()
         self.configure(bg=self.BG)
-        self.resizable(False, False)
-        self.geometry("560x780")
+        self.resizable(True, True)
+        screen_height = self.winfo_screenheight()
+        initial_height = min(980, max(700, screen_height - 80))
+        self.geometry(f"620x{initial_height}")
+        self.minsize(600, 600)
 
         self.input_path     = tk.StringVar()
         self.target_secs    = tk.StringVar(value="247")
@@ -158,6 +180,16 @@ class BoomerangApp(tk.Tk):
         self.audio_path     = tk.StringVar()
         self.audio_mode     = tk.StringVar(value="keep")  # "keep", "replace", "mix"
         self.audio_fade     = tk.BooleanVar(value=True)
+        self.safe_defaults  = tk.BooleanVar(value=True)
+        self.preset_name    = tk.StringVar(value="")
+        self.queue = []
+        self.queue_rows = []
+        self.advanced_widgets = []
+        self.last_output_dir = ""
+        self.last_input_dir = ""
+        self.last_audio_dir = ""
+        self.presets = {}
+        self._load_settings()
 
         self.status_text  = tk.StringVar(value="Choose a video to get started.")
         self.progress     = tk.DoubleVar(value=0.0)
@@ -169,15 +201,163 @@ class BoomerangApp(tk.Tk):
         self._check_deps()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    def _apply_theme_palette(self):
+        for name, value in self.THEMES.get(self.theme_name, self.THEMES["dark"]).items():
+            setattr(self, name, value)
+
+    def _switch_theme(self):
+        if self.processing:
+            return
+        self.theme_name = "light" if self.theme_name == "dark" else "dark"
+        self._apply_theme_palette()
+        self._save_settings()
+        for child in self.winfo_children():
+            child.destroy()
+        self.advanced_widgets = []
+        self.queue_rows = []
+        self._build_ui()
+        self._check_deps()
+
+    def _load_settings(self):
+        try:
+            data = json.loads(self.CONFIG_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if data.get("theme") in self.THEMES:
+            self.theme_name = data["theme"]
+            self._apply_theme_palette()
+        for key, var in (("target_secs", self.target_secs), ("crossfade", self.crossfade),
+                         ("speed", self.speed_val), ("transition", self.transition_val),
+                         ("audio_mode", self.audio_mode)):
+            if key in data:
+                var.set(str(data[key]))
+        if "audio_fade" in data:
+            self.audio_fade.set(bool(data["audio_fade"]))
+        if "safe_defaults" in data:
+            self.safe_defaults.set(bool(data["safe_defaults"]))
+        self.presets = data.get("presets", {}) if isinstance(data.get("presets", {}), dict) else {}
+        self.last_output_dir = str(data.get("last_output_dir", ""))
+        self.last_input_dir = str(data.get("last_input_dir", ""))
+        self.last_audio_dir = str(data.get("last_audio_dir", ""))
+
+    def _save_settings(self):
+        data = {
+            "target_secs": self.target_secs.get(), "crossfade": self.crossfade.get(),
+            "speed": self.speed_val.get(), "transition": self.transition_val.get(),
+            "audio_mode": self.audio_mode.get(), "audio_fade": self.audio_fade.get(),
+            "safe_defaults": self.safe_defaults.get(), "presets": self.presets,
+            "theme": self.theme_name,
+            "last_output_dir": self.last_output_dir, "last_input_dir": self.last_input_dir,
+            "last_audio_dir": self.last_audio_dir,
+        }
+        try:
+            self.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            self.CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _toggle_safe_defaults(self):
+        safe = self.safe_defaults.get()
+        if safe:
+            self.speed_val.set("1.0")
+            self.transition_val.set("fade")
+            self.audio_mode.set("keep")
+        state = "disabled" if safe else "normal"
+        for widget in self.advanced_widgets:
+            try:
+                widget.configure(state=state)
+            except tk.TclError:
+                pass
+        self._save_settings()
+
+    def _save_preset(self):
+        name = self.preset_name.get().strip()
+        if not name:
+            messagebox.showerror("Preset name", "Enter a name for this preset first.")
+            return
+        self.presets[name] = self._current_settings()
+        self._refresh_preset_names()
+        self.preset_combo.set(name)
+        self._save_settings()
+        self._set_status(f"Saved preset: {name}")
+
+    def _delete_preset(self):
+        name = self.preset_combo.get().strip()
+        if name and name in self.presets:
+            del self.presets[name]
+            self._refresh_preset_names()
+            self._save_settings()
+            self._set_status(f"Deleted preset: {name}")
+
+    def _apply_preset(self, _event=None):
+        data = self.presets.get(self.preset_combo.get().strip())
+        if not data:
+            return
+        preset_speed = str(data.get("speed", self.speed_val.get()))
+        preset_transition = str(data.get("transition", self.transition_val.get()))
+        preset_audio_mode = str(data.get("audio_mode", self.audio_mode.get()))
+        preset_audio_fade = bool(data.get("audio_fade", self.audio_fade.get()))
+        # A preset with advanced values must leave Safe defaults mode so the
+        # controls accurately reflect the settings that will be rendered.
+        if self.safe_defaults.get() and (
+            preset_speed != "1.0" or preset_transition != "fade" or
+            preset_audio_mode != "keep" or not preset_audio_fade
+        ):
+            self.safe_defaults.set(False)
+            self._toggle_safe_defaults()
+        self.target_secs.set(str(data.get("target_secs", self.target_secs.get())))
+        self.crossfade.set(str(data.get("crossfade", self.crossfade.get())))
+        self.speed_val.set(preset_speed)
+        self.transition_val.set(preset_transition)
+        self.audio_mode.set(preset_audio_mode)
+        self.audio_fade.set(preset_audio_fade)
+        self._set_status(f"Loaded preset: {self.preset_combo.get()}")
+
+    def _current_settings(self):
+        return {"target_secs": self.target_secs.get(), "crossfade": self.crossfade.get(),
+                "speed": self.speed_val.get(), "transition": self.transition_val.get(),
+                "audio_mode": self.audio_mode.get(), "audio_fade": self.audio_fade.get()}
+
+    def _refresh_preset_names(self):
+        self.preset_combo["values"] = sorted(self.presets)
+
     def _build_ui(self):
         # header
         hdr = tk.Frame(self, bg=self.BG)
         hdr.pack(fill="x", padx=24, pady=(20, 0))
         tk.Label(hdr, text="⟳", font=("Segoe UI", 28), bg=self.BG, fg=self.ACCENT).pack(side="left", padx=(0, 10))
-        tk.Label(hdr, text="Boomerang Looper", font=("Segoe UI", 20, "bold"), bg=self.BG, fg=self.TEXT).pack(side="left")
+        title_box = tk.Frame(hdr, bg=self.BG)
+        title_box.pack(side="left")
+        tk.Label(title_box, text="Boomerang Looper", font=("Segoe UI", 20, "bold"),
+                 bg=self.BG, fg=self.TEXT).pack(anchor="w")
+        tk.Label(title_box, text="Production workspace", font=("Segoe UI", 8),
+                 bg=self.BG, fg=self.MUTED).pack(anchor="w")
+        tk.Button(hdr, text="☀" if self.theme_name == "dark" else "☾",
+                  font=("Segoe UI", 12), bg=self.PANEL, fg=self.TEXT,
+                  activebackground=self.ACCENT, activeforeground="white",
+                  relief="flat", bd=0, padx=9, pady=5, cursor="hand2",
+                  command=self._switch_theme).pack(side="right")
 
         tk.Label(self, text="Forward → Reverse, crossfaded and cut to exact length.",
                  font=("Segoe UI", 9), bg=self.BG, fg=self.MUTED).pack(anchor="w", padx=24, pady=(4, 14))
+
+        # Repeatable internal workflows: presets and safe defaults.
+        workflow = tk.Frame(self, bg=self.PANEL, highlightbackground=self.BORDER, highlightthickness=1)
+        workflow.pack(fill="x", padx=24, pady=(0, 14))
+        tk.Label(workflow, text="Workflow", font=("Segoe UI", 10, "bold"),
+                 bg=self.PANEL, fg=self.TEXT).pack(side="left", padx=(12, 8), pady=9)
+        self.preset_combo = ttk.Combobox(workflow, textvariable=self.preset_name,
+                                         values=sorted(self.presets), state="normal", width=18)
+        self.preset_combo.pack(side="left", padx=(0, 6), pady=7)
+        self.preset_combo.bind("<<ComboboxSelected>>", self._apply_preset)
+        for label, command in (("Load", self._apply_preset), ("Save", self._save_preset), ("Delete", self._delete_preset)):
+            tk.Button(workflow, text=label, font=("Segoe UI", 8), bg=self.BORDER, fg=self.TEXT,
+                      activebackground=self.ACCENT, activeforeground="white", relief="flat",
+                      padx=7, pady=2, cursor="hand2", command=command).pack(side="left", padx=(0, 4))
+        tk.Checkbutton(workflow, text="Safe defaults", variable=self.safe_defaults,
+                       command=self._toggle_safe_defaults, bg=self.PANEL, fg=self.TEXT,
+                       selectcolor=self.BG, activebackground=self.PANEL,
+                       font=("Segoe UI", 8)).pack(side="right", padx=10)
 
         # file picker
         drop_frame = tk.Frame(self, bg=self.PANEL, highlightbackground=self.BORDER,
@@ -218,7 +398,7 @@ class BoomerangApp(tk.Tk):
         dur_row.pack(anchor="w")
         self.dur_entry = tk.Entry(dur_row, textvariable=self.target_secs,
                                   width=7, font=("Segoe UI", 13, "bold"),
-                                  bg=self.PANEL, fg=self.ACCENT2,
+                                  bg=self.ENTRY, fg=self.ACCENT2,
                                   insertbackground=self.TEXT, relief="flat",
                                   highlightbackground=self.BORDER, highlightthickness=1)
         self.dur_entry.pack(side="left", padx=(0, 6))
@@ -247,7 +427,7 @@ class BoomerangApp(tk.Tk):
         cf_row.pack(anchor="w")
         self.cf_entry = tk.Entry(cf_row, textvariable=self.crossfade,
                                  width=5, font=("Segoe UI", 13, "bold"),
-                                 bg=self.PANEL, fg=self.ACCENT2,
+                                 bg=self.ENTRY, fg=self.ACCENT2,
                                  insertbackground=self.TEXT, relief="flat",
                                  highlightbackground=self.BORDER, highlightthickness=1)
         self.cf_entry.pack(side="left", padx=(0, 6))
@@ -280,9 +460,10 @@ class BoomerangApp(tk.Tk):
         speed_combo = ttk.Combobox(
             s_left, textvariable=self.speed_val,
             values=["0.5", "0.75", "1.0", "1.25", "1.5", "2.0"],
-            state="readonly", width=12, font=("Segoe UI", 9)
+            state="readonly", width=12, font=("Segoe UI", 9), style="Modern.TCombobox"
         )
         speed_combo.pack(anchor="w")
+        self.advanced_widgets.append(speed_combo)
 
         # transition effect
         s_right = tk.Frame(settings2, bg=self.BG)
@@ -296,9 +477,10 @@ class BoomerangApp(tk.Tk):
         xfade_combo = ttk.Combobox(
             s_right, textvariable=self.transition_val,
             values=["fade", "wipeleft", "wiperight", "slideup", "slidedown", "circlecrop", "radial", "zoomIn", "pixelize", "dissolve"],
-            state="readonly", width=14, font=("Segoe UI", 9)
+            state="readonly", width=14, font=("Segoe UI", 9), style="Modern.TCombobox"
         )
         xfade_combo.pack(anchor="w")
+        self.advanced_widgets.append(xfade_combo)
 
         # ── Audio / Music track section ──
         audio_panel = tk.Frame(self, bg=self.PANEL, highlightbackground=self.BORDER, highlightthickness=1)
@@ -316,33 +498,50 @@ class BoomerangApp(tk.Tk):
                                 font=("Segoe UI", 8), bg=self.PANEL, fg=self.MUTED, anchor="w", wraplength=380)
         self.aud_lbl.pack(side="left", fill="x", expand=True)
 
-        tk.Button(aud_row, text="Browse…", font=("Segoe UI", 8), bg=self.BORDER, fg=self.TEXT,
+        audio_browse = tk.Button(aud_row, text="Browse…", font=("Segoe UI", 8), bg=self.BORDER, fg=self.TEXT,
                   activebackground=self.ACCENT, activeforeground="white", relief="flat",
-                  padx=8, pady=2, cursor="hand2", command=self._browse_audio).pack(side="right")
+                  padx=8, pady=2, cursor="hand2", command=self._browse_audio)
+        audio_browse.pack(side="right")
+        self.advanced_widgets.append(audio_browse)
 
         aud_opts = tk.Frame(audio_panel, bg=self.PANEL)
         aud_opts.pack(fill="x", padx=12, pady=(0, 10))
 
-        tk.Radiobutton(aud_opts, text="Keep original", variable=self.audio_mode, value="keep",
+        audio_radios = []
+        for text, value in (("Keep original", "keep"), ("Replace audio", "replace"), ("Mix with original", "mix")):
+            radio = tk.Radiobutton(aud_opts, text=text, variable=self.audio_mode, value=value,
                        bg=self.PANEL, fg=self.TEXT, selectcolor=self.BG, activebackground=self.PANEL,
-                       font=("Segoe UI", 8)).pack(side="left", padx=(0, 8))
-        tk.Radiobutton(aud_opts, text="Replace audio", variable=self.audio_mode, value="replace",
-                       bg=self.PANEL, fg=self.TEXT, selectcolor=self.BG, activebackground=self.PANEL,
-                       font=("Segoe UI", 8)).pack(side="left", padx=(0, 8))
-        tk.Radiobutton(aud_opts, text="Mix with original", variable=self.audio_mode, value="mix",
-                       bg=self.PANEL, fg=self.TEXT, selectcolor=self.BG, activebackground=self.PANEL,
-                       font=("Segoe UI", 8)).pack(side="left", padx=(0, 8))
+                       font=("Segoe UI", 8))
+            radio.pack(side="left", padx=(0, 8))
+            audio_radios.append(radio)
 
-        tk.Checkbutton(aud_opts, text="Fade out at end (2s)", variable=self.audio_fade,
+        fade_check = tk.Checkbutton(aud_opts, text="Fade out at end (2s)", variable=self.audio_fade,
                        bg=self.PANEL, fg=self.TEXT, selectcolor=self.BG, activebackground=self.PANEL,
-                       font=("Segoe UI", 8)).pack(side="right")
+                       font=("Segoe UI", 8))
+        fade_check.pack(side="right")
+        self.advanced_widgets.extend(audio_radios + [fade_check])
 
         # progress
-        prog_frame = tk.Frame(self, bg=self.BG)
+        prog_frame = tk.Frame(self, bg=self.PANEL, highlightbackground=self.BORDER,
+                              highlightthickness=1)
         prog_frame.pack(fill="x", padx=24, pady=(0, 12))
 
         style = ttk.Style(self)
         style.theme_use("default")
+        style.configure("Modern.TCombobox", fieldbackground=self.ENTRY,
+                        background=self.PANEL, foreground=self.TEXT,
+                        arrowcolor=self.ACCENT, bordercolor=self.BORDER,
+                        lightcolor=self.BORDER, darkcolor=self.BORDER,
+                        padding=5)
+        style.map("Modern.TCombobox", fieldbackground=[("readonly", self.ENTRY), ("disabled", self.PANEL)],
+                  foreground=[("disabled", self.MUTED), ("readonly", self.TEXT)])
+        style.configure("Modern.Treeview", background=self.PANEL, fieldbackground=self.PANEL,
+                        foreground=self.TEXT, rowheight=28, borderwidth=0,
+                        relief="flat")
+        style.configure("Modern.Treeview.Heading", background=self.BG,
+                        foreground=self.MUTED, font=("Segoe UI", 8, "bold"), relief="flat")
+        style.map("Modern.Treeview", background=[("selected", self.ACCENT)],
+                  foreground=[("selected", "white")])
         style.configure("Boom.Horizontal.TProgressbar",
                         troughcolor=self.PANEL, background=self.ACCENT,
                         bordercolor=self.BORDER, lightcolor=self.ACCENT,
@@ -354,19 +553,61 @@ class BoomerangApp(tk.Tk):
         self.prog_bar.pack(fill="x", pady=(0, 6))
 
         self.status_lbl = tk.Label(prog_frame, textvariable=self.status_text,
-                                   font=("Segoe UI", 8), bg=self.BG, fg=self.MUTED, anchor="w")
-        self.status_lbl.pack(fill="x")
+                                   font=("Segoe UI", 9), bg=self.PANEL, fg=self.MUTED, anchor="w")
+        self.status_lbl.pack(fill="x", padx=12, pady=(0, 10))
 
         # run / cancel button
+        actions = tk.Frame(self, bg=self.BG)
+        actions.pack(fill="x", padx=24, pady=(0, 20))
         self.run_btn = tk.Button(
-            self, text="▶  Create Boomerang",
+            actions, text="▶  Create Boomerang",
             font=("Segoe UI", 12, "bold"),
             bg=self.ACCENT, fg="white",
             activebackground=self.ACCENT2, activeforeground="white",
             relief="flat", padx=0, pady=10, cursor="hand2",
             command=self._on_run_button
         )
-        self.run_btn.pack(fill="x", padx=24, pady=(0, 20))
+        self.run_btn.pack(side="left", fill="x", expand=True)
+        tk.Button(actions, text="＋ Add to queue", font=("Segoe UI", 10, "bold"),
+                  bg=self.BORDER, fg=self.TEXT, activebackground=self.ACCENT,
+                  activeforeground="white", relief="flat", padx=10, pady=10,
+                  cursor="hand2", command=self._add_to_queue).pack(side="left", padx=(8, 0))
+
+        queue_panel = tk.Frame(self, bg=self.PANEL, highlightbackground=self.BORDER, highlightthickness=1)
+        queue_panel.pack(fill="both", expand=True, padx=24, pady=(0, 20))
+        qhead = tk.Frame(queue_panel, bg=self.PANEL)
+        qhead.pack(fill="x", padx=12, pady=(8, 4))
+        tk.Label(qhead, text="Batch queue", font=("Segoe UI", 10, "bold"), bg=self.PANEL, fg=self.TEXT).pack(side="left")
+        tk.Button(qhead, text="Clear", font=("Segoe UI", 8), bg=self.BORDER, fg=self.TEXT,
+                  relief="flat", command=self._clear_queue).pack(side="right")
+        tk.Button(qhead, text="Run queue", font=("Segoe UI", 8), bg=self.ACCENT, fg="white",
+                  activebackground=self.ACCENT2, relief="flat", command=self._run_queue).pack(side="right", padx=(0, 6))
+        tk.Button(qhead, text="View log", font=("Segoe UI", 8), bg=self.BORDER, fg=self.TEXT,
+                  relief="flat", command=self._open_log).pack(side="right", padx=(0, 6))
+        self.queue_list = ttk.Treeview(queue_panel, columns=("job", "output", "status"),
+                                       show="headings", height=4, style="Modern.Treeview")
+        self.queue_list.heading("job", text="Source clip")
+        self.queue_list.heading("output", text="Output")
+        self.queue_list.heading("status", text="Status")
+        self.queue_list.column("job", width=210, anchor="w")
+        self.queue_list.column("output", width=210, anchor="w")
+        self.queue_list.column("status", width=90, anchor="center")
+        self.queue_list.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        for job in self.queue:
+            self.queue_rows.append(self.queue_list.insert(
+                "", "end", values=(Path(job["src"]).name, Path(job["out"]).name, "Queued")))
+        self._toggle_safe_defaults()
+
+    def _open_log(self):
+        try:
+            self.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            self.LOG_FILE.touch(exist_ok=True)
+            if os.name == "nt":
+                os.startfile(str(self.LOG_FILE))
+            else:
+                subprocess.Popen(["xdg-open", str(self.LOG_FILE)])
+        except OSError as e:
+            messagebox.showerror("Job log", f"Could not open the job log: {e}")
 
     def _check_deps(self):
         if not find_ffmpeg():
@@ -376,10 +617,13 @@ class BoomerangApp(tk.Tk):
     def _browse(self):
         path = filedialog.askopenfilename(
             title="Select a video",
+            initialdir=self.last_input_dir or None,
             filetypes=[("Video files", "*.mp4 *.mov *.avi *.mkv *.webm *.m4v"), ("All files", "*.*")]
         )
         if path:
             self.input_path.set(path)
+            self.last_input_dir = str(Path(path).parent)
+            self._save_settings()
             self.drop_label.config(text=Path(path).name, fg=self.TEXT)
             self.drop_icon.config(text="✅")
             self._set_status(f"Ready — {Path(path).name}")
@@ -387,10 +631,13 @@ class BoomerangApp(tk.Tk):
     def _browse_audio(self):
         path = filedialog.askopenfilename(
             title="Select audio track",
+            initialdir=self.last_audio_dir or None,
             filetypes=[("Audio files", "*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.wma"), ("All files", "*.*")]
         )
         if path:
             self.audio_path.set(path)
+            self.last_audio_dir = str(Path(path).parent)
+            self._save_settings()
             self.aud_lbl.config(text=Path(path).name, fg=self.ACCENT2)
             if self.audio_mode.get() == "keep":
                 self.audio_mode.set("replace")
@@ -398,6 +645,112 @@ class BoomerangApp(tk.Tk):
             self.audio_path.set("")
             self.aud_lbl.config(text="No custom audio track (using video audio)", fg=self.MUTED)
             self.audio_mode.set("keep")
+
+    def _job_from_form(self, out_path):
+        return {
+            "src": self.input_path.get().strip(), "out": out_path,
+            "target": float(self.target_secs.get()), "cf": float(self.crossfade.get()),
+            "speed": float(self.speed_val.get()), "transition": self.transition_val.get().strip() or "fade",
+            "audio_file": self.audio_path.get().strip(), "audio_mode": self.audio_mode.get(),
+            "fade_audio": self.audio_fade.get(),
+        }
+
+    def _add_to_queue(self):
+        if not self._validate_form(show_errors=True):
+            return
+        src = self.input_path.get().strip()
+        out_path = filedialog.asksaveasfilename(
+            title="Queue output as…", defaultextension=".mp4",
+            initialdir=self.last_output_dir or str(Path(src).parent),
+            initialfile=Path(src).stem + "_boomerang.mp4",
+            filetypes=[("MP4 video", "*.mp4")])
+        if not out_path:
+            return
+        if os.path.abspath(out_path) == os.path.abspath(src):
+            messagebox.showerror("Invalid output", "Output file must be different from the input file.")
+            return
+        normalized_out = os.path.normcase(os.path.abspath(out_path))
+        if any(os.path.normcase(os.path.abspath(job["out"])) == normalized_out for job in self.queue):
+            messagebox.showerror("Duplicate output", "That output path is already used by another queued job.")
+            return
+        self.last_output_dir = str(Path(out_path).parent)
+        job = self._job_from_form(out_path)
+        self.queue.append(job)
+        row_id = self.queue_list.insert("", "end", values=(Path(src).name, Path(out_path).name, "Queued"))
+        self.queue_rows.append(row_id)
+        self._save_settings()
+        self._set_status(f"Added to queue ({len(self.queue)} job(s)).")
+
+    def _clear_queue(self):
+        if self.processing:
+            return
+        self.queue.clear()
+        for row_id in self.queue_list.get_children():
+            self.queue_list.delete(row_id)
+        self.queue_rows.clear()
+        self._set_status("Queue cleared.")
+
+    def _run_queue(self):
+        if self.processing:
+            return
+        if not self.queue:
+            messagebox.showinfo("Batch queue", "Add at least one job to the queue first.")
+            return
+        jobs = list(self.queue)
+        self.queue.clear()
+        for row_id in self.queue_list.get_children():
+            self.queue_list.delete(row_id)
+        self.queue_rows.clear()
+        self.processing = True
+        self.cancel_requested = False
+        self.run_btn.config(state="normal", text="⏹  Cancel", bg=self.ERROR)
+        threading.Thread(target=self._process_queue, args=(jobs,), daemon=True).start()
+
+    def _process_queue(self, jobs):
+        completed = 0
+        for index, job in enumerate(jobs, 1):
+            if self.cancel_requested:
+                break
+            self._set_status(f"Batch job {index}/{len(jobs)}: {Path(job['src']).name}")
+            if self._process(**job, show_dialog=False, manage_state=False):
+                completed += 1
+        self._set_status(f"Batch complete: {completed}/{len(jobs)} job(s) finished.")
+        self.processing = False
+        self.cancel_requested = False
+        self.current_proc = None
+        self.after(0, self._reset_run_button)
+        self.after(0, lambda: messagebox.showinfo("Batch complete", f"Finished {completed} of {len(jobs)} queued job(s)."))
+
+    def _write_job_log(self, job, status, error=""):
+        record = {"timestamp": datetime.now().isoformat(timespec="seconds"), "status": status,
+                  "source": job.get("src"), "output": job.get("out"), "settings": {
+                      k: job.get(k) for k in ("target", "cf", "speed", "transition", "audio_mode", "fade_audio")},
+                  "error": error}
+        try:
+            self.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            with self.LOG_FILE.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+        except OSError:
+            pass
+
+    def _validate_form(self, show_errors=False):
+        src = self.input_path.get().strip()
+        if not src or not os.path.isfile(src):
+            if show_errors: messagebox.showerror("No file", "Please select a valid video file first.")
+            return False
+        try:
+            target, cf, speed = float(self.target_secs.get()), float(self.crossfade.get()), float(self.speed_val.get())
+        except (TypeError, ValueError):
+            if show_errors: messagebox.showerror("Invalid input", "Duration, crossfade, and speed must be numbers.")
+            return False
+        if target <= 0 or cf < 0 or speed <= 0:
+            if show_errors: messagebox.showerror("Invalid input", "Duration and speed must be positive; crossfade cannot be negative.")
+            return False
+        audio_file = self.audio_path.get().strip()
+        if audio_file and not os.path.isfile(audio_file):
+            if show_errors: messagebox.showerror("Invalid audio file", "The selected audio file could not be found.")
+            return False
+        return True
 
     # ── thread-safe UI helpers ──
     def _set_status(self, msg: str, error=False):
@@ -441,57 +794,27 @@ class BoomerangApp(tk.Tk):
                     proc.terminate()
                 except Exception:
                     pass
+        self._save_settings()
         self.destroy()
 
     def _reset_run_button(self):
         self.run_btn.config(state="normal", text="▶  Create Boomerang", bg=self.ACCENT)
 
     def _start(self):
-        src = self.input_path.get().strip()
-        if not src or not os.path.isfile(src):
-            messagebox.showerror("No file", "Please select a valid video file first.")
-            return
         if self.processing:
             return
-
-        try:
-            target = float(self.target_secs.get())
-        except (TypeError, ValueError):
-            messagebox.showerror("Invalid input", "Target duration must be a valid number.")
+        if not self._validate_form(show_errors=True):
             return
-        try:
-            cf = float(self.crossfade.get())
-        except (TypeError, ValueError):
-            messagebox.showerror("Invalid input", "Crossfade must be a valid number.")
-            return
-        if target <= 0:
-            messagebox.showerror("Invalid input", "Target duration must be greater than 0.")
-            return
-        if cf < 0:
-            messagebox.showerror("Invalid input", "Crossfade cannot be negative.")
-            return
-
-        try:
-            speed = float(self.speed_val.get())
-            if speed <= 0:
-                raise ValueError()
-        except (TypeError, ValueError):
-            messagebox.showerror("Invalid input", "Speed must be a positive number (e.g. 1.0, 0.5, 2.0).")
-            return
-
+        src = self.input_path.get().strip()
+        target, cf, speed = float(self.target_secs.get()), float(self.crossfade.get()), float(self.speed_val.get())
         transition = self.transition_val.get().strip() or "fade"
-        audio_file = self.audio_path.get().strip()
-        audio_mode = self.audio_mode.get()
-        fade_audio = self.audio_fade.get()
-
-        if audio_file and not os.path.isfile(audio_file):
-            messagebox.showerror("Invalid audio file", "The selected audio file could not be found.")
-            return
+        audio_file, audio_mode, fade_audio = self.audio_path.get().strip(), self.audio_mode.get(), self.audio_fade.get()
 
         out_path = filedialog.asksaveasfilename(
             title="Save boomerang as…",
             defaultextension=".mp4",
             filetypes=[("MP4 video", "*.mp4")],
+            initialdir=self.last_output_dir or str(Path(src).parent),
             initialfile=Path(src).stem + "_boomerang.mp4"
         )
         if not out_path:
@@ -499,6 +822,8 @@ class BoomerangApp(tk.Tk):
         if os.path.abspath(out_path) == os.path.abspath(src):
             messagebox.showerror("Invalid output", "Output file must be different from the input file.")
             return
+        self.last_output_dir = str(Path(out_path).parent)
+        self._save_settings()
 
         self.processing = True
         self.cancel_requested = False
@@ -575,8 +900,13 @@ class BoomerangApp(tk.Tk):
 
     def _process(self, src: str, out: str, target: float, cf: float,
                  speed: float, transition: str, audio_file: str,
-                 audio_mode: str, fade_audio: bool):
+                 audio_mode: str, fade_audio: bool, show_dialog: bool = True,
+                 manage_state: bool = True):
         tmpdir = tempfile.mkdtemp(prefix="boomerang_")
+        job = {"src": src, "out": out, "target": target, "cf": cf, "speed": speed,
+               "transition": transition, "audio_file": audio_file, "audio_mode": audio_mode,
+               "fade_audio": fade_audio}
+        succeeded = False
         try:
             self._set_status("Analysing source video…")
             clip_dur = get_video_duration(src)
@@ -711,32 +1041,35 @@ class BoomerangApp(tk.Tk):
             self._set_progress(100)
             aud_info = f"Audio: {audio_mode.title()}" if has_custom_audio else "Audio: Original"
             self._set_status(f"✅  Done — {Path(out).name}  (exactly {target}s, {loops_needed} loops)")
-            self.after(0, lambda: messagebox.showinfo(
-                "Done!",
-                f"Boomerang created!\n\n"
-                f"Loops: {loops_needed}×  (fwd + rev)\n"
-                f"Crossfade: {cf}s ({transition})\n"
-                f"Speed: {speed}x\n"
-                f"{aud_info}\n"
-                f"Output length: exactly {target}s\n"
-                f"Encoder: {encoder}\n\n"
-                f"Saved to:\n{out}"
-            ))
+            succeeded = True
+            self._write_job_log(job, "completed")
+            if show_dialog:
+                self.after(0, lambda: messagebox.showinfo(
+                    "Done!", f"Boomerang created!\n\nLoops: {loops_needed}×  (fwd + rev)\n"
+                    f"Crossfade: {cf}s ({transition})\nSpeed: {speed}x\n{aud_info}\n"
+                    f"Output length: exactly {target}s\nEncoder: {encoder}\n\nSaved to:\n{out}"))
 
         except Cancelled:
             self._set_status("Cancelled.")
+            self._write_job_log(job, "cancelled")
         except RuntimeError as e:
             self._set_status("❌  FFmpeg error.", error=True)
-            self.after(0, lambda: messagebox.showerror("FFmpeg error", str(e)))
+            self._write_job_log(job, "failed", str(e))
+            if show_dialog:
+                self.after(0, lambda err=str(e): messagebox.showerror("FFmpeg error", err))
         except Exception as e:
             self._set_status(f"❌  {e}", error=True)
-            self.after(0, lambda: messagebox.showerror("Error", str(e)))
+            self._write_job_log(job, "failed", str(e))
+            if show_dialog:
+                self.after(0, lambda err=str(e): messagebox.showerror("Error", err))
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
-            self.processing = False
-            self.cancel_requested = False
-            self.current_proc = None
-            self.after(0, self._reset_run_button)
+            if manage_state:
+                self.processing = False
+                self.cancel_requested = False
+                self.current_proc = None
+                self.after(0, self._reset_run_button)
+        return succeeded
 
     def _xfade_concat(self, ffmpeg, tmpdir, segments, cf, enc_args_fn, have_audio,
                        seg_dur, transition, progress_duration, start_pct, end_pct):

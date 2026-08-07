@@ -21,6 +21,12 @@ handy for looping a clip to match a song length (e.g. exactly 4m07s).
 - Output is a standard H.264 MP4 (yuv420p, faststart) compatible with
   editors like PowerDirector, Premiere, etc.
 - Works with videos that have no audio track.
+- **Saved workflow presets** for repeatable internal jobs.
+- Remembers recent folders and settings between sessions.
+- **Batch queue** for processing multiple clips in one run.
+- Writes a machine-readable job history (`jobs.jsonl`) and includes a log viewer.
+- Safe-defaults mode can lock advanced settings for consistent team output.
+- Light/dark theme toggle with a modern queue table and status card.
 
 ## Requirements
 
@@ -54,6 +60,12 @@ Double-click **`Build Portable Release.bat`** or run `python build_portable.py`.
 4. Select **playback speed** (0.5x, 1.0x, 2.0x, etc.).
 5. (Optional) Browse for a custom **audio / music track** and select **Replace audio**, **Mix with original**, or **Keep original**, with optional 2s fade out.
 6. Click **Create Boomerang**, choose where to save, and watch the progress bar. You can cancel at any point.
+
+For repeatable internal workflows, save a named preset in the Workflow bar. Use
+**Add to queue** to collect multiple jobs, then **Run queue** to process them in
+sequence. Settings and recent folders are stored in the per-user application
+data folder; the **View log** button opens the JSONL job history. Use the sun/moon
+button in the header to switch between dark and light themes.
 
 ## How it works
 
